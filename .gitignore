@@ -1,0 +1,6 @@
+.env
+show_vectors.pkl
+__pycache__/
+.DS_Store
+.venv/
+shows.csv
