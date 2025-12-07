@@ -4,3 +4,5 @@ python-dotenv
 thefuzz
 numpy
 scikit-learn
+google-genai 
+pillow

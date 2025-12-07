@@ -1,8 +1,26 @@
 import pickle
 import sys
+import os
+from dotenv import load_dotenv
 from thefuzz import process
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+from openai import OpenAI
+from google import genai
+from google.genai import types
+from PIL import Image
+from io import BytesIO
+
+load_dotenv()
+
+
+try:
+    gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+    openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+except Exception as e:
+    print("Warning: Gemini Client could not start (Check GEMINI_API_KEY or OPENAI_API_KEY). Image generation will be skipped.")
+    gemini_client = None
+    openai_client = None
 
 def load_data():
     """Load the dictionary of show vectors from the pickle file."""
@@ -92,6 +110,77 @@ def recommend_shows(user_titles, embedding_data):
     
     return scores[:5] # Return top 5
 
+
+
+
+def generate_new_show_concept(base_shows, context_type="user's taste"):
+    """
+    Uses OpenAI to invent a new TV show concept based on a list of existing shows.
+    Returns: (Title, Description)
+    """
+    print(f"\nThinking of a new show concept based on {context_type}...")
+    
+    prompt = f"""
+    Create a concept for a new, original TV show based on the style and themes of these shows: {', '.join(base_shows)}.
+    
+    Return exactly two lines:
+    Line 1: The Title of the new show
+    Line 2: A short, 1-sentence description of the plot.
+    Do not add bolding or extra text.
+    """
+    
+    response = openai_client.chat.completions.create(
+        model="gpt-5-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    
+    content = response.choices[0].message.content.strip().split('\n')
+    # Basic cleanup to ensure we get title and desc
+    #TODO: add better structure to the response
+    title = content[0].replace("Title:", "").strip()
+    description = content[1].replace("Description:", "").strip() if len(content) > 1 else "A mysterious show."
+    
+    return title, description
+
+def generate_show_poster(title, description):
+    """
+    Uses Gemini 2.0 Flash to generate a poster via generate_content.
+    """
+    if not gemini_client:
+        print("Skipping image generation (No Gemini Client).")
+        return
+
+    print(f"Painting the poster for '{title}' using Gemini 2.0 Flash...")
+    
+    prompt = f"A high quality movie poster for a TV show named '{title}'. The show is about: {description}. Cinematic lighting, 4k."
+    
+    #TODO: change model
+    try:
+        response = gemini_client.models.generate_content(
+    model="gemini-2.5-flash-image",
+    contents=[prompt],
+    config=types.GenerateContentConfig(
+        response_modalities=['Image']
+    )
+)
+
+        for part in response.parts:
+            if part.text is not None:
+                print(part.text)
+            elif part.inline_data is not None:
+                image = part.as_image()
+                # Save and Show
+                clean_title = "".join(x for x in title if x.isalnum())
+                filename = f"poster_{clean_title}.png"
+                image.save(filename)
+                print(f"Saved {filename}")
+                image.show()
+
+    except Exception as e:
+        print(f"Error generating image: {e}")
+
+
+
 def main():
     # Load the database (we only need the keys/titles for this step)
     print("Loading data...")
@@ -111,7 +200,24 @@ def main():
         percentage = int(score * 100)
         print(f"{title} ({percentage}%)")
     
-    # TODO: genai phase
+    # 4. Generative AI Layer
+    print("\n------------------------------------------------")
+    print("I have also created just for you two shows which I think you would love.")
+    
+    # Show #1: Based on User Input
+    s1_title, s1_desc = generate_new_show_concept(chosen_shows, "your favorites")
+    print(f"\nShow #1 is based on the fact that you loved the input shows you gave me.")
+    print(f"Its name is {s1_title} and it is about {s1_desc}.")
+    generate_show_poster(s1_title, s1_desc)
+    
+    # Show #2: Based on Recommendations
+    rec_titles = [r[0] for r in recommendations[:3]] # Take top 3 recommendations
+    s2_title, s2_desc = generate_new_show_concept(rec_titles, "my recommendations")
+    print(f"\nShow #2 is based on the shows that I recommended for you.")
+    print(f"Its name is {s2_title} and it is about {s2_desc}.")
+    generate_show_poster(s2_title, s2_desc)
+    
+    print("\nHere are also the 2 tv show ads. Hope you like them!")
 
 if __name__ == "__main__":
     main()
