@@ -10,17 +10,13 @@ from google import genai
 from google.genai import types
 from PIL import Image
 from io import BytesIO
-
+import redis
 load_dotenv()
 
 
-try:
-    gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-    openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-except Exception as e:
-    print("Warning: Gemini Client could not start (Check GEMINI_API_KEY or OPENAI_API_KEY). Image generation will be skipped.")
-    gemini_client = None
-    openai_client = None
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
 
 def load_data():
     """Load the dictionary of show vectors from the pickle file."""

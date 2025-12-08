@@ -6,3 +6,4 @@ numpy
 scikit-learn
 google-genai 
 pillow
+redis
