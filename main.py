@@ -2,6 +2,9 @@ import pickle
 import sys
 import os
 from dotenv import load_dotenv
+from ingest_redis import logger
+import redis
+from redis.commands.search.query import Query
 from thefuzz import process
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
@@ -10,12 +13,38 @@ from google import genai
 from google.genai import types
 from PIL import Image
 from io import BytesIO
-import redis
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 load_dotenv()
 
 
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+
+r = redis.Redis(host='localhost', port=6379, decode_responses=False)
+INDEX_NAME = "shows_idx"
+
+
+def get_all_titles_from_redis():
+    """Fetch all keys starting with 'show:' to list"""   
+    keys = r.keys("show:*")
+
+    # decode bytes to strings
+    titles = [k.decode('utf-8').replace("show:", "") for k in keys]
+    return titles
+
+
+def get_vector(title):
+    """Retrieve a single vector from Redis."""
+    #get the raw bytes and convert back to numpy
+    data = r.hget(f"show:{title}", "embedding")
+    if data:
+        return np.frombuffer(data, dtype=np.float32)
+    return None
 
 
 def load_data():
@@ -34,7 +63,7 @@ def get_user_preferences(valid_titles):
     Returns a list of the exact titles found in our database.
     """
     while True:
-        # 1. Ask the user for input
+      
         user_input = input("\nWhich TV shows did you really like watching? Separate them by a comma.\nMake sure to enter more than 1 show: ")
         
         # Split string by comma and remove whitespace
@@ -44,16 +73,13 @@ def get_user_preferences(valid_titles):
             print("Please enter at least 2 shows.")
             continue
 
-        # 2. Fuzzy Matching
+        # Fuzzy Matching
         matched_shows = []
         for raw_show in raw_shows:
-            # process.extractOne returns a tuple: (Best Match String, Score)
-            # We compare the user's input against the list of all valid titles
             best_match, score = process.extractOne(raw_show, valid_titles)
             matched_shows.append(best_match)
 
-        # 3. Confirmation
-        # Join the matched titles nicely for display
+        # Confirmation
         confirmation_str = ", ".join(matched_shows)
         print(f"\nMaking sure, do you mean {confirmation_str}? (y/n)")
         
@@ -63,9 +89,30 @@ def get_user_preferences(valid_titles):
             return matched_shows
         else:
             print("\nSorry about that. Let's try again, please make sure to write the names of the tv shows correctly")
-            # The loop continues here, taking the user back to step #1
 
 
+
+def search_redis(user_vector, k=5):
+    """
+    Perform the Vector Search (KNN) in Redis
+    """
+    #Prepare the query vector as bytes
+    vec_bytes = user_vector.astype(np.float32).tobytes()
+
+    # Construct the Query
+    q = Query(f"*=>[KNN {k} @embedding $vec AS score]")\
+        .sort_by("score")\
+        .return_fields("title", "score")\
+        .dialect(2) # Important: Vector search requires dialect 2 or greater
+
+    params = {"vec": vec_bytes}
+    
+    # Execute
+    results = r.ft(INDEX_NAME).search(q, query_params=params)
+ 
+    return results.docs
+
+#OLD FUNCTION
 def recommend_shows(user_titles, embedding_data):
     """
     1. Average the vectors of the user_titles.
@@ -178,42 +225,54 @@ def generate_show_poster(title, description):
 
 
 def main():
-    # Load the database (we only need the keys/titles for this step)
-    print("Loading data...")
-    show_data = load_data()
-    all_titles = list(show_data.keys())
+    # Load from Redis
+    logger.info("Connecting to Redis...")
     
-    # Get validated user input
+    all_titles = get_all_titles_from_redis()
+   
+    # User Input
     chosen_shows = get_user_preferences(all_titles)
     
-    print("\nGreat! Generating recommendations now...")
+    # Vector Math
+    print("\nCalculating User Taste Profile...")
+    user_vectors = [get_vector(t) for t in chosen_shows]
+    profile_vector = np.mean(user_vectors, axis=0)
 
-    # Get Recommendations
-    recommendations = recommend_shows(chosen_shows, show_data)
+    # Redis Search
+    print("Searching Redis Index (Vector Similarity)...")
+    search_results = search_redis(profile_vector, k=10)
     
     print("\nHere are the tv shows that I think you would love:")
-    for title, score in recommendations:
-        percentage = int(score * 100)
+    
+    recommendations_titles = []
+    count = 0
+    
+    for doc in search_results:
+        title = doc.title
+        #if it's one of the shows the user typed
+        if title in chosen_shows:
+            continue
+            
+        # Note: 0 distance = 100% match
+        score = float(doc.score)
+        percentage = int((1 - (score / 2)) * 100) # Rough mapping for Cosine distance
+        
         print(f"{title} ({percentage}%)")
-    
-    # 4. Generative AI Layer
+        recommendations_titles.append(title)
+        
+        count += 1
+        if count >= 5: 
+            break
+
+    # GenAI Layer
     print("\n------------------------------------------------")
-    print("I have also created just for you two shows which I think you would love.")
-    
-    # Show #1: Based on User Input
     s1_title, s1_desc = generate_new_show_concept(chosen_shows, "your favorites")
-    print(f"\nShow #1 is based on the fact that you loved the input shows you gave me.")
-    print(f"Its name is {s1_title} and it is about {s1_desc}.")
+    print(f"\nShow #1 ({s1_title}): {s1_desc}")
     generate_show_poster(s1_title, s1_desc)
     
-    # Show #2: Based on Recommendations
-    rec_titles = [r[0] for r in recommendations[:3]] # Take top 3 recommendations
-    s2_title, s2_desc = generate_new_show_concept(rec_titles, "my recommendations")
-    print(f"\nShow #2 is based on the shows that I recommended for you.")
-    print(f"Its name is {s2_title} and it is about {s2_desc}.")
+    s2_title, s2_desc = generate_new_show_concept(recommendations_titles[:3], "my recommendations")
+    print(f"\nShow #2 ({s2_title}): {s2_desc}")
     generate_show_poster(s2_title, s2_desc)
-    
-    print("\nHere are also the 2 tv show ads. Hope you like them!")
 
 if __name__ == "__main__":
     main()
