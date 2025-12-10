@@ -1,6 +1,7 @@
 import pickle
 import sys
 import os
+import requests
 from dotenv import load_dotenv
 from ingest_redis import logger
 import redis
@@ -14,6 +15,7 @@ from google.genai import types
 from PIL import Image
 from io import BytesIO
 import logging
+
 
 
 logger = logging.getLogger(__name__)
@@ -112,9 +114,11 @@ def search_redis(user_vector, k=5):
  
     return results.docs
 
-#OLD FUNCTION
-def recommend_shows(user_titles, embedding_data):
+#OLD FUNCTION 
+#THIS FUNCTION IS NOT USED ANYMORE
+def recommend_shows_loop(user_titles, embedding_data):
     """
+    [DEPRECATED]
     1. Average the vectors of the user_titles.
     2. Loop through all_data to find similarities.
     3. Return top 5 matches (not including the shows the user already input).
@@ -187,40 +191,37 @@ def generate_new_show_concept(base_shows, context_type="user's taste"):
 
 def generate_show_poster(title, description):
     """
-    Uses Gemini 2.0 Flash to generate a poster via generate_content.
+    Uses DALL-E 3 to generate a poster.
     """
-    if not gemini_client:
-        print("Skipping image generation (No Gemini Client).")
-        return
 
-    print(f"Painting the poster for '{title}' using Gemini 2.0 Flash...")
+    print(f"Painting the poster for '{title}' using DALL-E 3...")
     
     prompt = f"A high quality movie poster for a TV show named '{title}'. The show is about: {description}. Cinematic lighting, 4k."
-    
-    #TODO: change model
-    try:
-        response = gemini_client.models.generate_content(
-    model="gemini-2.5-flash-image",
-    contents=[prompt],
-    config=types.GenerateContentConfig(
-        response_modalities=['Image']
-    )
-)
 
-        for part in response.parts:
-            if part.text is not None:
-                print(part.text)
-            elif part.inline_data is not None:
-                image = part.as_image()
-                # Save and Show
-                clean_title = "".join(x for x in title if x.isalnum())
-                filename = f"poster_{clean_title}.png"
-                image.save(filename)
-                print(f"Saved {filename}")
-                image.show()
+    try:
+        response = openai_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt,
+                size="1024x1024",
+                quality="standard",
+                n=1,
+            )
+
+        image_url = response.data[0].url
+            
+        # Download the image from the URL
+        img_data = requests.get(image_url).content
+        image = Image.open(BytesIO(img_data))
+        
+        clean_title = "".join(x for x in title if x.isalnum())
+        filename = f"posters/poster_{clean_title}_dalle.png"
+        image.save(filename)
+        print(f"   Success! Saved {filename}")
+        image.show()
 
     except Exception as e:
         print(f"Error generating image: {e}")
+
 
 
 
@@ -255,7 +256,7 @@ def main():
             
         # Note: 0 distance = 100% match
         score = float(doc.score)
-        percentage = int((1 - (score / 2)) * 100) # Rough mapping for Cosine distance
+        percentage = int((1 - (score / 2)) * 100)
         
         print(f"{title} ({percentage}%)")
         recommendations_titles.append(title)
@@ -264,7 +265,7 @@ def main():
         if count >= 5: 
             break
 
-    # GenAI Layer
+    #GenAI Layer
     print("\n------------------------------------------------")
     s1_title, s1_desc = generate_new_show_concept(chosen_shows, "your favorites")
     print(f"\nShow #1 ({s1_title}): {s1_desc}")

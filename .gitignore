@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 shows.csv
 redis_data/
+posters/
